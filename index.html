@@ -521,7 +521,7 @@
         function showResult(from, distance, cost) {
             fromSpan.textContent = from;
             distanceSpan.textContent = distance.toLocaleString();
-            costSpan.textContent = `$${cost.toFixed(2)}`;
+            costSpan.textContent = `$${Math.round(cost)}`;
             resultDiv.classList.add('show');
         }
         
