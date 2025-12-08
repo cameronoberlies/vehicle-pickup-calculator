@@ -295,6 +295,8 @@
         let selectedSuggestionIndex = -1;
         let suggestions = [];
         let selectedCoords = null; // Store coords from selected suggestion
+        let currentSearchQuery = ''; // Track current search to prevent race conditions
+        let abortController = null; // For canceling in-flight requests
         
         // Autocomplete as user types
         locationInput.addEventListener('input', (e) => {
@@ -305,15 +307,21 @@
             
             clearTimeout(debounceTimer);
             
-            if (query.length < 3) {
+            // Cancel any pending requests
+            if (abortController) {
+                abortController.abort();
+            }
+            
+            if (query.length < 2) {
                 hideSuggestions();
+                currentSearchQuery = '';
                 return;
             }
             
-            // Debounce API calls
+            // Longer debounce for smoother experience (400ms instead of 300ms)
             debounceTimer = setTimeout(() => {
                 fetchSuggestions(query);
-            }, 300);
+            }, 400);
         });
         
         // Keyboard navigation for suggestions
@@ -346,24 +354,81 @@
         });
         
         async function fetchSuggestions(query) {
+            // Prevent race conditions - ignore stale requests
+            currentSearchQuery = query;
+            
             try {
-                const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}, USA&limit=5`;
+                // Create new abort controller for this request
+                abortController = new AbortController();
+                
+                // Prioritize cities and states by using structured query
+                const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&countrycodes=us&limit=8&addressdetails=1`;
                 
                 const response = await fetch(url, {
                     headers: {
                         'User-Agent': 'VehiclePickupCalculator/1.0'
-                    }
+                    },
+                    signal: abortController.signal
                 });
                 
                 if (!response.ok) return;
                 
                 const data = await response.json();
-                suggestions = data;
-                displaySuggestions(data);
+                
+                // Only update if this is still the current search
+                if (query !== currentSearchQuery) {
+                    return;
+                }
+                
+                // Filter and rank results for better quality
+                const rankedResults = rankResults(data, query);
+                
+                suggestions = rankedResults;
+                displaySuggestions(rankedResults);
                 
             } catch (error) {
+                // Ignore abort errors (expected when user keeps typing)
+                if (error.name === 'AbortError') {
+                    return;
+                }
                 console.error('Failed to fetch suggestions:', error);
             }
+        }
+        
+        function rankResults(results, query) {
+            const queryLower = query.toLowerCase();
+            
+            // Score and sort results
+            const scored = results.map(item => {
+                let score = 0;
+                const address = item.address || {};
+                const displayLower = item.display_name.toLowerCase();
+                
+                // Prioritize cities, towns, and states
+                if (address.city || address.town || address.village) score += 100;
+                if (address.state) score += 50;
+                
+                // Boost exact matches at the start
+                if (displayLower.startsWith(queryLower)) score += 200;
+                
+                // Boost if query matches city/town name
+                const cityName = (address.city || address.town || address.village || '').toLowerCase();
+                if (cityName.startsWith(queryLower)) score += 150;
+                
+                // Penalize very long addresses (likely specific buildings)
+                if (item.display_name.length > 100) score -= 30;
+                
+                // Prioritize place types
+                const goodTypes = ['city', 'town', 'village', 'state', 'county'];
+                if (goodTypes.includes(item.type)) score += 80;
+                
+                return { ...item, score };
+            });
+            
+            // Sort by score (highest first) and return top results
+            return scored
+                .sort((a, b) => b.score - a.score)
+                .slice(0, 5);
         }
         
         function displaySuggestions(data) {
@@ -373,10 +438,29 @@
             }
             
             suggestionsDiv.innerHTML = data.map((item, index) => {
-                const displayName = item.display_name;
+                // Format the display name more cleanly
+                const address = item.address || {};
+                let primaryText = '';
+                let secondaryText = '';
+                
+                // Build cleaner display
+                if (address.city || address.town || address.village) {
+                    primaryText = address.city || address.town || address.village;
+                    secondaryText = address.state || '';
+                } else if (address.county) {
+                    primaryText = address.county;
+                    secondaryText = address.state || '';
+                } else {
+                    // Fallback to display_name but trim it
+                    const parts = item.display_name.split(',').slice(0, 3);
+                    primaryText = parts[0];
+                    secondaryText = parts.slice(1).join(',');
+                }
+                
                 return `
                     <div class="suggestion-item" data-index="${index}">
-                        <div class="suggestion-name">${displayName}</div>
+                        <div class="suggestion-name">${primaryText}</div>
+                        ${secondaryText ? `<div class="suggestion-details">${secondaryText}</div>` : ''}
                     </div>
                 `;
             }).join('');
@@ -558,3 +642,4 @@
     </script>
 </body>
 </html>
+
