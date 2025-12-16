@@ -311,10 +311,10 @@
                 return;
             }
             
-            // Reduced debounce for faster response with Photon
+            // Longer debounce to respect Nominatim rate limits (1 req/sec)
             debounceTimer = setTimeout(() => {
                 fetchSuggestions(query);
-            }, 300);
+            }, 800);
         });
         
         // Keyboard navigation for suggestions
@@ -350,10 +350,14 @@
             currentSearchQuery = query;
             
             try {
-                // Using Photon API - faster and better for autocomplete
-                const url = `https://photon.komoot.io/api/?q=${encodeURIComponent(query)}&limit=8&lang=en&location_bias_scale=0.5`;
+                // Using Nominatim with better rate limit handling
+                const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&countrycodes=us&limit=6&addressdetails=1`;
                 
-                const response = await fetch(url);
+                const response = await fetch(url, {
+                    headers: {
+                        'User-Agent': 'VehiclePickupCalculator/1.0'
+                    }
+                });
                 
                 if (!response.ok) return;
                 
@@ -362,42 +366,15 @@
                 // Ignore stale responses
                 if (query !== currentSearchQuery) return;
                 
-                // Convert Photon format to our format
-                const results = data.features
-                    .filter(f => f.properties.country === 'United States')
-                    .map(f => {
-                        const props = f.properties;
-                        return {
-                            lat: f.geometry.coordinates[1],
-                            lon: f.geometry.coordinates[0],
-                            display_name: buildDisplayName(props),
-                            address: {
-                                city: props.city,
-                                town: props.name,
-                                state: props.state,
-                                county: props.county
-                            },
-                            type: props.type,
-                            properties: props
-                        };
-                    });
+                // Filter and rank results for better quality
+                const rankedResults = rankResults(data, query);
                 
-                const rankedResults = rankResults(results, query);
                 suggestions = rankedResults;
                 displaySuggestions(rankedResults);
                 
             } catch (error) {
                 console.error('Failed to fetch suggestions:', error);
             }
-        }
-        
-        function buildDisplayName(props) {
-            const parts = [];
-            if (props.name) parts.push(props.name);
-            if (props.city && props.city !== props.name) parts.push(props.city);
-            if (props.county) parts.push(props.county);
-            if (props.state) parts.push(props.state);
-            return parts.join(', ');
         }
         
         function rankResults(results, query) {
@@ -543,9 +520,14 @@
         });
         
         async function geocodeLocation(location) {
-            const url = `https://photon.komoot.io/api/?q=${encodeURIComponent(location)}&limit=1`;
+            // Using Nominatim (OpenStreetMap) for geocoding
+            const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(location)}, USA&limit=1`;
             
-            const response = await fetch(url);
+            const response = await fetch(url, {
+                headers: {
+                    'User-Agent': 'VehiclePickupCalculator/1.0'
+                }
+            });
             
             if (!response.ok) {
                 throw new Error('Failed to find location. Please try again.');
@@ -553,14 +535,13 @@
             
             const data = await response.json();
             
-            if (!data.features || data.features.length === 0) {
+            if (data.length === 0) {
                 throw new Error('Location not found. Please check the address and try again.');
             }
             
-            const coords = data.features[0].geometry.coordinates;
             return {
-                lat: coords[1],
-                lon: coords[0]
+                lat: parseFloat(data[0].lat),
+                lon: parseFloat(data[0].lon)
             };
         }
         
@@ -626,3 +607,4 @@
     </script>
 </body>
 </html>
+
