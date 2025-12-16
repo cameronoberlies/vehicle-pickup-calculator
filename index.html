@@ -311,10 +311,10 @@
                 return;
             }
             
-            // Longer debounce to respect Nominatim rate limits (1 req/sec)
+            // LocationIQ can handle faster requests (2 req/sec)
             debounceTimer = setTimeout(() => {
                 fetchSuggestions(query);
-            }, 800);
+            }, 300);
         });
         
         // Keyboard navigation for suggestions
@@ -350,14 +350,11 @@
             currentSearchQuery = query;
             
             try {
-                // Using Nominatim with better rate limit handling
-                const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&countrycodes=us&limit=6&addressdetails=1`;
+                // Using LocationIQ Autocomplete API - much faster and more reliable
+                const apiKey = 'pk.ad8425665c12e1b7f5d7827258d59077';
+                const url = `https://api.locationiq.com/v1/autocomplete?key=${apiKey}&q=${encodeURIComponent(query)}&countrycodes=us&limit=6&dedupe=1`;
                 
-                const response = await fetch(url, {
-                    headers: {
-                        'User-Agent': 'VehiclePickupCalculator/1.0'
-                    }
-                });
+                const response = await fetch(url);
                 
                 if (!response.ok) return;
                 
@@ -520,14 +517,11 @@
         });
         
         async function geocodeLocation(location) {
-            // Using Nominatim (OpenStreetMap) for geocoding
-            const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(location)}, USA&limit=1`;
+            // Using LocationIQ Search API
+            const apiKey = 'pk.ad8425665c12e1b7f5d7827258d59077';
+            const url = `https://us1.locationiq.com/v1/search?key=${apiKey}&q=${encodeURIComponent(location)}, USA&format=json&limit=1`;
             
-            const response = await fetch(url, {
-                headers: {
-                    'User-Agent': 'VehiclePickupCalculator/1.0'
-                }
-            });
+            const response = await fetch(url);
             
             if (!response.ok) {
                 throw new Error('Failed to find location. Please try again.');
