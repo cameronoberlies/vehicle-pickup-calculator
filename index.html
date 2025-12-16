@@ -294,23 +294,16 @@
         let debounceTimer;
         let selectedSuggestionIndex = -1;
         let suggestions = [];
-        let selectedCoords = null; // Store coords from selected suggestion
-        let currentSearchQuery = ''; // Track current search to prevent race conditions
-        let abortController = null; // For canceling in-flight requests
+        let selectedCoords = null;
+        let currentSearchQuery = '';
         
         // Autocomplete as user types
         locationInput.addEventListener('input', (e) => {
             const query = e.target.value.trim();
             
-            // Clear stored coords when user manually types
             selectedCoords = null;
             
             clearTimeout(debounceTimer);
-            
-            // Cancel any pending requests
-            if (abortController) {
-                abortController.abort();
-            }
             
             if (query.length < 2) {
                 hideSuggestions();
@@ -318,10 +311,10 @@
                 return;
             }
             
-            // Longer debounce for smoother experience (400ms instead of 300ms)
+            // Reduced debounce for faster response with Photon
             debounceTimer = setTimeout(() => {
                 fetchSuggestions(query);
-            }, 400);
+            }, 300);
         });
         
         // Keyboard navigation for suggestions
@@ -354,81 +347,91 @@
         });
         
         async function fetchSuggestions(query) {
-            // Prevent race conditions - ignore stale requests
             currentSearchQuery = query;
             
             try {
-                // Create new abort controller for this request
-                abortController = new AbortController();
+                // Using Photon API - faster and better for autocomplete
+                const url = `https://photon.komoot.io/api/?q=${encodeURIComponent(query)}&limit=8&lang=en&location_bias_scale=0.5`;
                 
-                // Prioritize cities and states by using structured query
-                const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&countrycodes=us&limit=8&addressdetails=1`;
-                
-                const response = await fetch(url, {
-                    headers: {
-                        'User-Agent': 'VehiclePickupCalculator/1.0'
-                    },
-                    signal: abortController.signal
-                });
+                const response = await fetch(url);
                 
                 if (!response.ok) return;
                 
                 const data = await response.json();
                 
-                // Only update if this is still the current search
-                if (query !== currentSearchQuery) {
-                    return;
-                }
+                // Ignore stale responses
+                if (query !== currentSearchQuery) return;
                 
-                // Filter and rank results for better quality
-                const rankedResults = rankResults(data, query);
+                // Convert Photon format to our format
+                const results = data.features
+                    .filter(f => f.properties.country === 'United States')
+                    .map(f => {
+                        const props = f.properties;
+                        return {
+                            lat: f.geometry.coordinates[1],
+                            lon: f.geometry.coordinates[0],
+                            display_name: buildDisplayName(props),
+                            address: {
+                                city: props.city,
+                                town: props.name,
+                                state: props.state,
+                                county: props.county
+                            },
+                            type: props.type,
+                            properties: props
+                        };
+                    });
                 
+                const rankedResults = rankResults(results, query);
                 suggestions = rankedResults;
                 displaySuggestions(rankedResults);
                 
             } catch (error) {
-                // Ignore abort errors (expected when user keeps typing)
-                if (error.name === 'AbortError') {
-                    return;
-                }
                 console.error('Failed to fetch suggestions:', error);
             }
+        }
+        
+        function buildDisplayName(props) {
+            const parts = [];
+            if (props.name) parts.push(props.name);
+            if (props.city && props.city !== props.name) parts.push(props.city);
+            if (props.county) parts.push(props.county);
+            if (props.state) parts.push(props.state);
+            return parts.join(', ');
         }
         
         function rankResults(results, query) {
             const queryLower = query.toLowerCase();
             
-            // Score and sort results
             const scored = results.map(item => {
                 let score = 0;
                 const address = item.address || {};
+                const props = item.properties || {};
                 const displayLower = item.display_name.toLowerCase();
                 
-                // Prioritize cities, towns, and states
-                if (address.city || address.town || address.village) score += 100;
+                // Prioritize cities, towns
+                if (address.city || address.town) score += 100;
                 if (address.state) score += 50;
                 
-                // Boost exact matches at the start
+                // Boost exact matches
                 if (displayLower.startsWith(queryLower)) score += 200;
                 
-                // Boost if query matches city/town name
-                const cityName = (address.city || address.town || address.village || '').toLowerCase();
+                const cityName = (address.city || address.town || '').toLowerCase();
                 if (cityName.startsWith(queryLower)) score += 150;
                 
-                // Penalize very long addresses (likely specific buildings)
+                // Penalize very long addresses
                 if (item.display_name.length > 100) score -= 30;
                 
                 // Prioritize place types
-                const goodTypes = ['city', 'town', 'village', 'state', 'county'];
+                const goodTypes = ['city', 'town', 'village', 'state', 'county', 'administrative'];
                 if (goodTypes.includes(item.type)) score += 80;
                 
                 return { ...item, score };
             });
             
-            // Sort by score (highest first) and return top results
             return scored
                 .sort((a, b) => b.score - a.score)
-                .slice(0, 5);
+                .slice(0, 6);
         }
         
         function displaySuggestions(data) {
@@ -438,20 +441,20 @@
             }
             
             suggestionsDiv.innerHTML = data.map((item, index) => {
-                // Format the display name more cleanly
                 const address = item.address || {};
                 let primaryText = '';
                 let secondaryText = '';
                 
-                // Build cleaner display
-                if (address.city || address.town || address.village) {
-                    primaryText = address.city || address.town || address.village;
-                    secondaryText = address.state || '';
+                if (address.city || address.town) {
+                    primaryText = address.city || address.town;
+                    const parts = [];
+                    if (address.county) parts.push(address.county);
+                    if (address.state) parts.push(address.state);
+                    secondaryText = parts.join(', ');
                 } else if (address.county) {
                     primaryText = address.county;
                     secondaryText = address.state || '';
                 } else {
-                    // Fallback to display_name but trim it
                     const parts = item.display_name.split(',').slice(0, 3);
                     primaryText = parts[0];
                     secondaryText = parts.slice(1).join(',');
@@ -465,7 +468,6 @@
                 `;
             }).join('');
             
-            // Add click handlers
             suggestionsDiv.querySelectorAll('.suggestion-item').forEach((item, index) => {
                 item.addEventListener('click', () => {
                     selectSuggestion(suggestions[index]);
@@ -478,13 +480,11 @@
         
         function selectSuggestion(suggestion) {
             locationInput.value = suggestion.display_name;
-            // Store the coordinates from the selected suggestion
             selectedCoords = {
                 lat: parseFloat(suggestion.lat),
                 lon: parseFloat(suggestion.lon)
             };
             hideSuggestions();
-            // Auto-trigger calculation after selection
             setTimeout(() => calculateBtn.click(), 100);
         }
         
@@ -508,7 +508,6 @@
             selectedSuggestionIndex = -1;
         }
         
-        // Allow Enter key to trigger calculation
         locationInput.addEventListener('keypress', (e) => {
             if (e.key === 'Enter') {
                 calculateBtn.click();
@@ -529,16 +528,10 @@
             disableButton();
             
             try {
-                // Step 1: Get coordinates (use stored coords if available from suggestion)
                 const originCoords = selectedCoords || await geocodeLocation(location);
-                
-                // Step 2: Get driving distance
                 const distance = await getDrivingDistance(originCoords);
-                
-                // Step 3: Calculate cost
                 const cost = distance * RATE_PER_MILE;
                 
-                // Display results
                 showResult(location, distance, cost);
                 
             } catch (error) {
@@ -550,14 +543,9 @@
         });
         
         async function geocodeLocation(location) {
-            // Using Nominatim (OpenStreetMap) for geocoding
-            const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(location)}, USA&limit=1`;
+            const url = `https://photon.komoot.io/api/?q=${encodeURIComponent(location)}&limit=1`;
             
-            const response = await fetch(url, {
-                headers: {
-                    'User-Agent': 'VehiclePickupCalculator/1.0'
-                }
-            });
+            const response = await fetch(url);
             
             if (!response.ok) {
                 throw new Error('Failed to find location. Please try again.');
@@ -565,18 +553,18 @@
             
             const data = await response.json();
             
-            if (data.length === 0) {
+            if (!data.features || data.features.length === 0) {
                 throw new Error('Location not found. Please check the address and try again.');
             }
             
+            const coords = data.features[0].geometry.coordinates;
             return {
-                lat: parseFloat(data[0].lat),
-                lon: parseFloat(data[0].lon)
+                lat: coords[1],
+                lon: coords[0]
             };
         }
         
         async function getDrivingDistance(origin) {
-            // Using OSRM (Open Source Routing Machine) - no API key needed and CORS-friendly
             const url = `https://router.project-osrm.org/route/v1/driving/${origin.lon},${origin.lat};${DEST_LON},${DEST_LAT}?overview=false`;
             
             const response = await fetch(url);
@@ -591,13 +579,8 @@
                 throw new Error('Could not find a route to this location.');
             }
             
-            // Distance is in meters, convert to miles
-            //Test
             const distanceMeters = data.routes[0].distance;
             const distanceMiles = distanceMeters * 0.000621371;
-            
-            // Apply adjustment factor to match Google Maps more closely
-            // OSRM tends to be about 3% shorter than Google Maps
             const adjustedMiles = distanceMiles * 1.03;
             
             return Math.round(adjustedMiles);
@@ -643,5 +626,3 @@
     </script>
 </body>
 </html>
-
-
